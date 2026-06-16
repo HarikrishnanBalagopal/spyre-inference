@@ -74,6 +74,7 @@ tests:
     - rel_path: tests/v1/attention/test_attention_backends.py
       allow_list:
         - test: "test_causal_backend_correctness"
+          # The platform override ensures block_size is a multiple of 64.
           mode: mandatory_pass
           tags: [attention, upstream]
           params:
