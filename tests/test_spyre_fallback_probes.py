@@ -90,46 +90,9 @@ def test_spyre_lm_head_unpadded_matmul_and_slice(spyre_device):
 # ---------------------------------------------------------------------------
 # 2. Scatter / index_select / embedding
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Spyre rejects a non-contiguous tensor as the source of an indexed "
-        "scatter write. This is the root cause that forced the QKV unfusing "
-        "workaround and complicates per-token KV-cache scatter."
-    ),
-)
-def test_spyre_strided_scatter_source(spyre_device):
-    """Scatter write whose source is a non-contiguous strided view."""
-    num_tokens = 16
-    num_heads, num_kv_heads, head_size = 8, 2, 64
-    q_size, kv_size = num_heads * head_size, num_kv_heads * head_size
-
-    qkv = torch.randn(
-        num_tokens,
-        q_size + 2 * kv_size,
-        dtype=torch.float16,
-        device=spyre_device,
-    )
-    _, _, v = qkv.split([q_size, kv_size, kv_size], dim=-1)
-    v = v.view(-1, num_kv_heads, head_size)
-
-    num_blocks, block_size = 4, 8
-    kv_cache = torch.zeros(
-        num_blocks,
-        2,
-        block_size,
-        num_kv_heads,
-        head_size,
-        dtype=torch.float16,
-        device=spyre_device,
-    )
-    block_indices = torch.zeros(num_tokens, dtype=torch.long, device=spyre_device)
-    # Avoid aten.remainder on Spyre; compute offsets on CPU and copy.
-    block_offsets = torch.arange(num_tokens, dtype=torch.long) % block_size
-    block_offsets = block_offsets.to(spyre_device)
-    kv_cache[block_indices, 1, block_offsets] = v
+# Note: the QKV strided-scatter-source probe lives in tests/test_mlp.py as
+# test_spyre_strided_scatter_source (xfail strict). It is intentionally not
+# duplicated here.
 
 
 @pytest.mark.xfail(
