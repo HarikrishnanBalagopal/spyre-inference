@@ -72,9 +72,10 @@ def test_spyre_last_dim_slice(spyre_device):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Spyre F.linear with arbitrary output rows (LM head vocab size) "
-        "fails unless the output dimension is a multiple of 64 * (k * 32). "
-        "Tracked by torch-spyre#1918."
+        "Spyre F.linear fails when the output dimension is not a multiple "
+        "of 64 * (k * 32) due to a work-division limitation. The on-device "
+        "unpad slice is exercised too, but the mismatch comes from the "
+        "matmul path. Tracked by torch-spyre#1918."
     ),
 )
 def test_spyre_lm_head_unpadded_matmul_and_slice(spyre_device):
@@ -115,11 +116,12 @@ def test_spyre_index_select_for_rope(spyre_device):
 def test_spyre_embedding_for_vocab(spyre_device):
     """torch.embedding on a Spyre weight (VocabParallelEmbedding primitive).
 
-    The embedding computation itself currently falls back to CPU (see the
-    FallbackWarning), but the op is registered and the result is moved back
-    to Spyre. This test documents current behavior rather than xfail-ing it,
-    because the numerical path is correct and the performance cost is the
-    only problem.
+    aten.embedding is a registered CPU fallback in torch-spyre
+    (torch-spyre#420), so the op moves the weight and indices to CPU,
+    computes the embedding there, and returns the result to Spyre. The
+    numerical path is correct and the result lands back on-device; only the
+    performance cost remains. This test documents current behavior rather
+    than xfail-ing it.
     """
     weight = torch.randn(4096, 4096, dtype=torch.float16, device=spyre_device)
     input_ids = torch.randint(0, 4096, (32,), device=spyre_device)
