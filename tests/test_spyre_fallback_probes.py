@@ -209,6 +209,6 @@ def test_spyre_inplace_mul_noncontiguous(spyre_device):
     """In-place mul on a transposed/logit-shaped non-contiguous Spyre tensor."""
     logits = torch.randn(32, 32000, dtype=torch.float16, device=spyre_device).t()[:32]
     assert not logits.is_contiguous()
+    expected = logits.cpu().clone() * (1.0 / 6.0)
     logits *= 1.0 / 6.0
-    expected = logits.cpu().clone() * 1.0 / 6.0
     torch.testing.assert_close(logits.cpu(), expected, atol=1e-3, rtol=1e-3)
