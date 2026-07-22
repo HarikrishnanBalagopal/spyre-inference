@@ -92,10 +92,7 @@ def test_spyre_lm_head_unpadded_matmul_and_slice(spyre_device):
 
 @pytest.mark.xfail(
     strict=True,
-    reason=(
-        "Spyre lacks a native index_select kernel. "
-        "This blocks on-device RoPE cos/sin gather."
-    ),
+    reason=("Spyre lacks a native index_select kernel. This blocks on-device RoPE cos/sin gather."),
 )
 def test_spyre_index_select_for_rope(spyre_device):
     """index_select rows from a cache (RoPE cos/sin gather primitive)."""
@@ -106,22 +103,9 @@ def test_spyre_index_select_for_rope(spyre_device):
     torch.testing.assert_close(out.cpu(), expected, atol=1e-3, rtol=1e-3)
 
 
-def test_spyre_embedding_for_vocab(spyre_device):
-    """torch.embedding on a Spyre weight (VocabParallelEmbedding primitive).
-
-    aten.embedding is a registered CPU fallback in torch-spyre
-    (torch-spyre#420), so the op moves the weight and indices to CPU,
-    computes the embedding there, and returns the result to Spyre. The
-    numerical path is correct and the result lands back on-device; only the
-    performance cost remains. This test documents current behavior rather
-    than xfail-ing it.
-    """
-    weight = torch.randn(4096, 4096, dtype=torch.float16, device=spyre_device)
-    input_ids = torch.randint(0, 4096, (32,), device=spyre_device)
-    out = torch.embedding(weight, input_ids)
-    expected = torch.embedding(weight.cpu(), input_ids.cpu())
-    torch.testing.assert_close(out.cpu(), expected, atol=1e-3, rtol=1e-3)
-    assert out.device.type == "spyre"
+# Note: the embedding CPU-fallback probe lives in
+# tests/test_vocab_parallel_embedding.py::test_embedding_cpu_fallback_xfail
+# (xfail strict). It is intentionally not duplicated here.
 
 
 # ---------------------------------------------------------------------------
