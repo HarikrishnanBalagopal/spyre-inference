@@ -116,22 +116,51 @@ def test_spyre_index_select_for_rope(spyre_device):
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "Spyre does not support a symbolic-offset in-place write into a "
-        "paged tensor (narrow().copy_() writes row 0 silently). "
-        "This blocks eliminating the CPU staging buffer in attention output "
-        "scatter and the deprecated torch.ops.spyre.overwrite path."
+        "Eager narrow().copy_() into a Spyre tensor writes row 0 instead of "
+        "the target row (silent wrong values). Blocks replacing the on-device "
+        "torch.ops.spyre.overwrite write with a plain eager narrow().copy_()."
     ),
 )
-def test_spyre_symbolic_offset_page_write(spyre_device):
-    """Symbolic-offset in-place write into a KV page."""
+def test_spyre_eager_narrow_copy_at_offset(spyre_device):
+    """Eager row write at a constant offset lands at row 0 instead of the target."""
+    page = torch.zeros(2, 256, 64, dtype=torch.float16, device=spyre_device)
+    tok = torch.randn(2, 1, 64, dtype=torch.float16, device=spyre_device)
+
+    page.narrow(1, 37, 1).copy_(tok)
+
+    expected = torch.zeros(2, 256, 64, dtype=torch.float16)
+    expected[:, 37, :] = tok.cpu()[:, 0, :]
+    torch.testing.assert_close(page.cpu(), expected, atol=0, rtol=0)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Compiled narrow().copy_() at a data-dependent (SymInt) offset fails "
+        "to lower ('shape error in scatter op, can not broadcast [.,1,.] to "
+        "[.,u,.]'). This is why slot_mapping is copied to host int constants "
+        "before the write instead of indexing pages on-device."
+    ),
+)
+def test_spyre_compiled_narrow_copy_at_symbolic_offset(spyre_device):
+    """Compiled row write at a tensor-derived (symbolic) offset fails to lower."""
     page = torch.zeros(2, 256, 64, dtype=torch.float16, device=spyre_device)
     tok = torch.randn(2, 1, 64, dtype=torch.float16, device=spyre_device)
     offset = torch.tensor(37, device=spyre_device)
-    page.narrow(1, int(offset.item()), 1).copy_(tok)
 
-    expected_page = torch.zeros(2, 256, 64, dtype=torch.float16)
-    expected_page[:, 37, :] = tok.cpu()[:, 0, :]
-    torch.testing.assert_close(page.cpu(), expected_page, atol=0, rtol=0)
+    @torch.compile(dynamic=False)
+    def write(page, tok, off):
+        # capture_scalar_outputs keeps off.item() an unbacked SymInt, so the
+        # narrow start is genuinely symbolic in the graph (not a constant).
+        page.narrow(1, off.item(), 1).copy_(tok)
+        return page
+
+    with torch._dynamo.config.patch(capture_scalar_outputs=True):
+        write(page, tok, offset)
+
+    expected = torch.zeros(2, 256, 64, dtype=torch.float16)
+    expected[:, 37, :] = tok.cpu()[:, 0, :]
+    torch.testing.assert_close(page.cpu(), expected, atol=0, rtol=0)
 
 
 # ---------------------------------------------------------------------------
