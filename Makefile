@@ -38,18 +38,26 @@ endif
 # expression finer than the 3 coarse tiers (e.g. CI splitting the "full"-only
 # upstream suites into separate parallel jobs) -- set MARK_OVERRIDE and the
 # TEST_TYPE mapping below is skipped.
+# perf is NOT a pytest marker subset: it is a benchmark mode of `make tests`
+# that shells out to the vLLM benchmark suite (perf-tests target) instead of
+# pytest, so it has no MARK_EXPR. It is accepted here (not rejected) and the
+# `tests` target routes it to perf-tests. This keeps perf on the SAME
+# `make tests TEST_TYPE=...` entry point as the sibling repos (torch-spyre,
+# hf-adapters), so CI drives every suite through one knob.
 ifneq ($(MARK_OVERRIDE),)
 MARK_EXPR := -m "$(MARK_OVERRIDE)"
 else ifeq ($(TEST_TYPE),full)
 MARK_EXPR :=
 else ifeq ($(TEST_TYPE),trunk)
 MARK_EXPR :=
+else ifeq ($(TEST_TYPE),perf)
+MARK_EXPR :=
 else ifeq ($(TEST_TYPE),smoke)
 MARK_EXPR := -m "not (distributed or upstream or attention)"
 else ifeq ($(TEST_TYPE),core)
 MARK_EXPR := -m "not upstream"
 else
-$(error Invalid TEST_TYPE '$(TEST_TYPE)'. Valid values: smoke | core | full | trunk)
+$(error Invalid TEST_TYPE '$(TEST_TYPE)'. Valid values: smoke | core | full | trunk | perf)
 endif
 
 # Root all-suite JUnit output under one directory so a caller can glob it in
@@ -126,8 +134,10 @@ test-upstream-model: ## Run the upstream+model (non-distributed) marker combo.
 # unfiltered run -- mirror that here so `make test TEST_TYPE=full` is
 # GHA-parity, one flat JUnit file per combo in RESULTS_DIR, same convention
 # hf-adapters' Makefile uses.
-tests: ## Run tests. TEST_TYPE=smoke|core|full|trunk|unit|integration|regression (default regression) or set MARK_OVERRIDE directly.
-	if [ -n "$(MARK_OVERRIDE)" ] || { [ "$(TEST_TYPE)" != "full" ] && [ "$(TEST_TYPE)" != "trunk" ]; }; then \
+tests: ## Run tests. TEST_TYPE=smoke|core|full|trunk|perf|unit|integration|regression (default regression) or set MARK_OVERRIDE directly.
+	if [ "$(TEST_TYPE)" = "perf" ]; then \
+	  $(MAKE) perf-tests RESULTS_DIR="$(RESULTS_DIR)"; \
+	elif [ -n "$(MARK_OVERRIDE)" ] || { [ "$(TEST_TYPE)" != "full" ] && [ "$(TEST_TYPE)" != "trunk" ]; }; then \
 	  $(MAKE) run-one JUNIT_XML=$(JUNIT_XML); \
 	else \
 	  mkdir -p "$(RESULTS_DIR)"; \
