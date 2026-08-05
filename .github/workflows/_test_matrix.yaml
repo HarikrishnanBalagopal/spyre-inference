@@ -88,10 +88,21 @@ on:
         type: string
         default: full
     secrets:
-      # ClickHouse connection for the perf job's benchmark ingest. All optional:
-      # a run without them (any non-perf run, or perf with CLICKHOUSE_HOST unset)
-      # simply skips the ingest step. secrets: inherit at the caller forwards the
-      # org/repo secrets when present.
+      # Declaring any workflow_call.secrets closes the secrets object for
+      # actionlint: every secrets.* used anywhere in this file must then be
+      # listed here. So the pre-existing ARTIFACTORY_* (override-RPM install)
+      # are declared alongside the new CLICKHOUSE_* (perf ingest). All optional;
+      # secrets: inherit at each caller forwards the org/repo secrets present.
+      ARTIFACTORY_USER:
+        required: false
+      ARTIFACTORY_TOKEN:
+        required: false
+      ARTIFACTORY_BASE_URL:
+        required: false
+      ARTIFACTORY_RPM_PATH:
+        required: false
+      # ClickHouse connection for the perf job's benchmark ingest. A run without
+      # them (any non-perf run, or perf with CLICKHOUSE_HOST unset) skips ingest.
       CLICKHOUSE_HOST:
         required: false
       CLICKHOUSE_PORT:
@@ -485,31 +496,26 @@ jobs:
           path: ${{ env.RESULTS_DIR }}
           retention-days: 14
 
-      # Ingest only when a ClickHouse host is configured (weekly runs on the
-      # base repo). Fork PRs never reach here (pull_request is excluded), and a
-      # run without the secret simply skips ingest -- the benchmark artifact is
-      # still uploaded above.
+      # Ingest via the reusable composite action, the single ingest
+      # implementation (no duplicated logic). Secrets cannot reach a composite
+      # action, so the ClickHouse connection is passed as plain inputs. The
+      # action gates internally: an empty clickhouse-host (secret unset) or no
+      # benchmark JSON is a clean no-op, so this runs unconditionally on
+      # non-PR events (fork PRs are already excluded by the job-level if:) and
+      # the benchmark artifact uploaded above is still kept either way.
       - name: Ingest benchmark results into ClickHouse
-        if: ${{ github.event_name != 'pull_request' && secrets.CLICKHOUSE_HOST != '' }}
-        env:
-          CLICKHOUSE_HOST: ${{ secrets.CLICKHOUSE_HOST }}
-          CLICKHOUSE_PORT: ${{ secrets.CLICKHOUSE_PORT }}
-          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
-          CLICKHOUSE_PASS: ${{ secrets.CLICKHOUSE_PASS }}
-          CLICKHOUSE_DB: ${{ secrets.CLICKHOUSE_DB }}
-          BENCHMARK_BRANCH: ${{ inputs.ref || github.ref_name }}
-          BENCHMARK_SHA: ${{ github.sha }}
-        run: |
-          JSON_COUNT=$(find "${RESULTS_DIR}" -name '*.json' 2>/dev/null | wc -l)
-          if [[ "${JSON_COUNT}" -eq 0 ]]; then
-            echo "::warning::No benchmark JSON in ${RESULTS_DIR}; skipping ingest."
-            exit 0
-          fi
-          uv run python3 .github/scripts/ingest_vllm_benchmarks.py \
-            --results-dir "${RESULTS_DIR}" \
-            --workflow "vLLM Benchmark" \
-            --branch "${BENCHMARK_BRANCH}" \
-            --sha "${BENCHMARK_SHA}" \
-            --run-id "${{ github.run_id }}" \
-            --job-id "0" \
-            --pr-number "0"
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: ./.github/actions/ingest-vllm-benchmarks
+        with:
+          results-dir: ${{ env.RESULTS_DIR }}
+          workflow: vLLM Benchmark
+          branch: ${{ inputs.ref || github.ref_name }}
+          sha: ${{ github.sha }}
+          run-id: ${{ github.run_id }}
+          job-id: '0'
+          pr-number: '0'
+          clickhouse-host: ${{ secrets.CLICKHOUSE_HOST }}
+          clickhouse-port: ${{ secrets.CLICKHOUSE_PORT }}
+          clickhouse-user: ${{ secrets.CLICKHOUSE_USER }}
+          clickhouse-pass: ${{ secrets.CLICKHOUSE_PASS }}
+          clickhouse-db: ${{ secrets.CLICKHOUSE_DB }}
