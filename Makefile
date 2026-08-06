@@ -14,11 +14,18 @@ SHELL := /bin/bash
 TEST_TYPE ?= regression
 
 # Resolve the user-facing tier aliases to this Makefile's own vocabulary once,
-# up front, via the shared script (same source of truth as _test_matrix.yaml's
-# gate step), so the marker mapping below only has to handle smoke|core|full.
-# override is required: TEST_TYPE is commonly set on the `make` command line,
-# which a plain := reassignment cannot override.
-override TEST_TYPE := $(shell scripts/resolve_test_type.sh "$(TEST_TYPE)")
+# up front, via the shared script -- the single source of truth for BOTH the
+# alias map AND the valid set (shared with _test_matrix.yaml). The script also
+# validates: on an unknown type it prints the full "Valid: ..." message to
+# stderr (which reaches the terminal) and exits 1, printing nothing to stdout.
+# $(shell ...) hides the exit code (and .SHELLSTATUS needs GNU make >= 4.2, not
+# guaranteed everywhere), so we detect failure by the empty stdout capture and
+# stop the build. The valid-set list stays only in the script; the marker
+# mapping below is the Makefile's only per-type knowledge.
+override TEST_TYPE := $(strip $(shell scripts/resolve_test_type.sh "$(TEST_TYPE)"))
+ifeq ($(TEST_TYPE),)
+$(error resolve_test_type.sh rejected TEST_TYPE (see the 'Valid: ...' error above))
+endif
 
 # Flags passed verbatim to pytest. Mirrors the CI invocation so `make test`
 # reproduces CI verbosity; override e.g. `make test PYTEST_ARGS="-x -q"`.
@@ -57,7 +64,10 @@ MARK_EXPR := -m "not (distributed or upstream or attention)"
 else ifeq ($(TEST_TYPE),core)
 MARK_EXPR := -m "not upstream"
 else
-$(error Invalid TEST_TYPE '$(TEST_TYPE)'. Valid values: smoke | core | full | trunk | perf)
+# resolve_test_type.sh already rejected any type outside its valid set, so a
+# value that reaches here IS valid but has no marker mapping above -- i.e. a
+# new type was added to the script without a case here. Point at the fix.
+$(error TEST_TYPE '$(TEST_TYPE)' has no pytest marker mapping in this Makefile; add a case above)
 endif
 
 # Root all-suite JUnit output under one directory so a caller can glob it in
