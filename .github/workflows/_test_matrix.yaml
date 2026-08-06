@@ -87,6 +87,18 @@ on:
         required: false
         type: string
         default: full
+      skip_uv_for_benchmarking:
+        description: |
+          Perf job only. When true, the benchmark runner bypasses `uv run` and
+          calls the prebaked venv's python3 directly (make ... TEST_TYPE=perf
+          SKIP_UV_FOR_BENCHMARKING=1). Needed on arches where uv re-resolves the
+          project and cannot find a torch/vllm wheel (s390x: torch==2.11.0 has no
+          s390x wheel), so uv builds a fresh venv without torch and every
+          benchmark fails with "No module named 'torch'". Default false keeps the
+          uv path, correct on arches with a resolvable lockfile (amd64, ppc64le).
+        required: false
+        type: boolean
+        default: false
     secrets:
       # Declaring any workflow_call.secrets closes the secrets object for
       # actionlint: every secrets.* used anywhere in this file must then be
@@ -483,26 +495,22 @@ jobs:
         run: uv run .github/cache_config/manage_cache.py --public
 
       - name: Run vLLM benchmarks
+        env:
+          # true -> "1" (bypass uv, use the baked venv's python3 directly),
+          # false -> "" (keep the uv path). The Makefile treats empty as "use uv".
+          SKIP_UV_FOR_BENCHMARKING: ${{ inputs.skip_uv_for_benchmarking && '1' || '' }}
         run: |
           echo "Running vLLM benchmark suite (TEST_TYPE=perf)..."
-          make tests TEST_TYPE=perf RESULTS_DIR="${RESULTS_DIR}"
+          make tests TEST_TYPE=perf RESULTS_DIR="${RESULTS_DIR}" \
+            SKIP_UV_FOR_BENCHMARKING="${SKIP_UV_FOR_BENCHMARKING}"
           echo "benchmarks done"
-
-      - name: Upload benchmark results
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: ${{ env.RESULTS_DIR }}
-          retention-days: 14
 
       # Ingest via the reusable composite action, the single ingest
       # implementation (no duplicated logic). Secrets cannot reach a composite
       # action, so the ClickHouse connection is passed as plain inputs. The
       # action gates internally: an empty clickhouse-host (secret unset) or no
       # benchmark JSON is a clean no-op, so this runs unconditionally on
-      # non-PR events (fork PRs are already excluded by the job-level if:) and
-      # the benchmark artifact uploaded above is still kept either way.
+      # non-PR events (fork PRs are already excluded by the job-level if:).
       - name: Ingest benchmark results into ClickHouse
         if: ${{ github.event_name != 'pull_request' }}
         uses: ./.github/actions/ingest-vllm-benchmarks

@@ -153,9 +153,25 @@ tests: ## Run tests. TEST_TYPE=smoke|core|full|trunk|perf|unit|integration|regre
 
 test: tests  ## Alias for `tests`, matching torch-spyre's Makefile target name.
 
-perf-tests: ## Run vLLM benchmark suite, writing JSON results under RESULTS_DIR.
+# On some arches (notably s390x) `uv run` refuses to reuse the prebaked image
+# venv: it re-resolves the project, cannot find an s390x torch/vllm wheel
+# (torch==2.11.0 publishes no s390x wheel), and builds a fresh workspace .venv
+# WITHOUT torch, so every benchmark then dies with "No module named 'torch'".
+# No combination of --active/--no-sync/--frozen/--inexact/--no-project avoids
+# this. Set SKIP_UV_FOR_BENCHMARKING=1 to bypass uv entirely and invoke the
+# already-activated venv's python3 directly (the setup sourced above exports
+# $VIRTUAL_ENV, so plain python3 is the baked interpreter). Empty/unset keeps
+# the uv path, correct on arches with a resolvable lockfile (amd64, ppc64le).
+SKIP_UV_FOR_BENCHMARKING ?=
+ifeq ($(strip $(SKIP_UV_FOR_BENCHMARKING)),)
+BENCH_PY := uv run --active --no-sync python3
+else
+BENCH_PY := python3
+endif
+
+perf-tests: ## Run vLLM benchmark suite, writing JSON results under RESULTS_DIR. Set SKIP_UV_FOR_BENCHMARKING=1 to bypass uv and use the active venv's python3 directly (needed on s390x).
 	mkdir -p "$(RESULTS_DIR)"
 	$(AIU_SETUP_CMD); \
-	uv run --active --no-sync python3 .github/scripts/run_vllm_benchmarks.py \
+	$(BENCH_PY) .github/scripts/run_vllm_benchmarks.py \
 		--configs-dir vllm-benchmarks/benchmarks/spyre \
 		--results-dir "$(RESULTS_DIR)"
