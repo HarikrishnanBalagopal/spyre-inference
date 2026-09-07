@@ -88,6 +88,7 @@ from spyre_testing_plugin.models import (
     Tolerances,
     UpstreamTestConfig,
 )
+from spyre_testing_plugin.tags import result_tags
 from spyre_testing_plugin.vfio_reaper import (
     reap_vfio_holders,
     spyre_hardware_present,
@@ -657,6 +658,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                 continue
 
             item.add_marker(upstream_marker)
+
+            # Stamp the same model__/testtype__ JUnit tags the conftest fixture
+            # puts on this repo's tests. That fixture is bound under tests/ and
+            # never fires for upstream items (collected from the vLLM cache), so
+            # tag them here. Done before the skip/xfail branches below so a tag
+            # lands regardless of the item's eventual disposition.
+            params = getattr(getattr(item, "callspec", None), "params", {})
+            for name, value in result_tags(params):
+                item.user_properties.append((name, value))
 
             fc = _find_file_config(test_path, file_configs)
             if fc is None:
