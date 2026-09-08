@@ -29,13 +29,9 @@ def _clear_env_cache():
 
 @pytest.fixture(autouse=True)
 def _emit_result_tags(request, record_property):
-    """Stamp `model__<name>` and `testtype__<tier>` onto each local test as JUnit
-    `<property name="tag" .../>` elements, matching the tag convention the
-    ClickHouse ingest reads (a single `tag` property whose value is `key__value`).
-    Upstream vLLM tests are collected from outside tests/, so this fixture never
-    binds to them; the plugin's pytest_collection_modifyitems tags those instead.
-    Both tags are optional: a test with no model param and a local run with no
-    tier just emit nothing."""
+    """Autouse: stamp each local test's `model__`/`testtype__` JUnit tags (see
+    spyre_testing_plugin.tags). Upstream tests are tagged in the plugin's
+    collection hook instead."""
     params = getattr(getattr(request.node, "callspec", None), "params", {})
     for name, value in result_tags(params):
         record_property(name, value)
