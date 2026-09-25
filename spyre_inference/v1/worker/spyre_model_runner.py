@@ -497,6 +497,9 @@ class _SpyreModelWrapper:
         multimodal prompt starts producing garbage rather than failing, suspect
         that layout again before anything else here.
         """
+        # Generic path: model.embed_input_ids only does text embedding, or
+        # boolean-mask ops are handled inside the model's own patch (e.g.
+        # patch_embed_input_ids for Granite4Vision).
         num_tokens = input_ids.shape[0]
         bucketer = self._shape_bucketer
         padded_tokens = bucketer.find_bucket(num_tokens) if bucketer is not None else None
@@ -632,7 +635,9 @@ class TorchSpyreModelRunner(GPUModelRunner):
         # Must run before load_model builds+loads the (now 128-wide) params.
         install_padded_head_dim(self.model_config)
         install_bert_head_pad(self.model_config)
-        install_head_pad_weight_loader(model_loader, self.model_config.hf_config)
+        install_head_pad_weight_loader(
+            model_loader, self.model_config.hf_text_config, self.model_config
+        )
         install_mlp_pad_weight_loader(model_loader, self.model_config.hf_text_config)
 
         # Load model on CPU
@@ -653,10 +658,10 @@ class TorchSpyreModelRunner(GPUModelRunner):
 
         # Restore original RoPE frequencies and attention scale corrupted by the
         # head_dim width override (no-op unless the platform padded head_dim).
-        verify_padded_head_dim(self.model, self.model_config.hf_config)
+        verify_padded_head_dim(self.model, self.model_config.hf_text_config)
         verify_padded_intermediate_size(self.model, self.model_config.hf_text_config)
-        fix_padded_rope(self.model, self.model_config.hf_config)
-        fix_padded_attention_scale(self.model, self.model_config.hf_config)
+        fix_padded_rope(self.model, self.model_config.hf_text_config)
+        fix_padded_attention_scale(self.model, self.model_config.hf_text_config)
 
         # Keep Attention module buffers (_k_scale, _v_scale, etc.) on CPU.
         # Note: This _apply cannot reside in SpyreAttentionImpl, as it is not
@@ -677,7 +682,7 @@ class TorchSpyreModelRunner(GPUModelRunner):
         logger.info("Spyre-native layer weights moved to %s", self._spyre_device)
         logger.info("Model loaded for Spyre in %.3fs.", time.time() - t0)
 
-        # Patches instances, so it runs after load and before compile wraps modules
+        # Patches instances/classes, so it runs after load and before compile wraps modules
         # in OptimizedModule and breaks traversal.
         apply_multimodal_patches(self.model, self._spyre_device)
 
