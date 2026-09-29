@@ -403,22 +403,28 @@ MODELS ?=
 TPS ?=
 BENCH_TYPES ?=
 
-# The serve configs replay trace files that are not in the repo. FETCH_BENCH_DATA=0
-# skips the fetch for a host that already has them mounted (the x86_64 benchmark
-# hosts do); anywhere else the fetch is what makes a serve config runnable at all,
-# so it is on by default. `eval` runs in the same shell as the benchmark below, so
-# the exported SPYRE_*_DATASET vars reach run_vllm_benchmarks.py.
+# The serve configs replay trace files that are not in the repo, so the fetch is
+# what makes a serve config runnable at all and is on by default. Set
+# FETCH_BENCH_DATA=0 on a host that already has the traces mounted.
+#
+# The script writes `export SPYRE_*_DATASET=...` lines to stdout and its
+# diagnostics to stderr. Capture stdout to a file FIRST and source it only after
+# the script succeeded: eval'ing the output of a failed run would emit no exports,
+# and run_vllm_benchmarks.py would then fall back to its built-in /models/... paths
+# and print a second, misleading "not present on this host" error for what is
+# really one fetch failure.
 FETCH_BENCH_DATA ?= 1
 ifeq ($(strip $(FETCH_BENCH_DATA)),0)
 BENCH_DATA_CMD := true
 else
-BENCH_DATA_CMD := eval "$$(python3 .github/scripts/fetch_bench_datasets.py)"
+BENCH_DATA_CMD := python3 .github/scripts/fetch_bench_datasets.py > "$$_bench_env" && . "$$_bench_env"
 endif
 
 perf-tests: ## Run vLLM benchmark suite, writing JSON results under RESULTS_DIR. Filter with MODELS=<csv>, TPS=<csv of tensor-parallel sizes> and/or BENCH_TYPES=latency,throughput,serve. Set SKIP_UV_FOR_BENCHMARKING=1 to bypass uv and use the active venv's python3 directly (needed on s390x). Set FETCH_BENCH_DATA=0 to use pre-mounted traces instead of fetching them.
 	mkdir -p "$(RESULTS_DIR)"
+	_bench_env="$$(mktemp)"; trap 'rm -f "$$_bench_env"' EXIT; \
 	$(AIU_SETUP_CMD); \
-	$(BENCH_DATA_CMD); \
+	$(BENCH_DATA_CMD) && \
 	$(BENCH_PY) .github/scripts/run_vllm_benchmarks.py \
 		--configs-dir vllm-benchmarks/benchmarks/spyre \
 		--results-dir "$(RESULTS_DIR)" \
