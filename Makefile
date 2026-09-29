@@ -403,9 +403,22 @@ MODELS ?=
 TPS ?=
 BENCH_TYPES ?=
 
-perf-tests: ## Run vLLM benchmark suite, writing JSON results under RESULTS_DIR. Filter with MODELS=<csv>, TPS=<csv of tensor-parallel sizes> and/or BENCH_TYPES=latency,throughput,serve. Set SKIP_UV_FOR_BENCHMARKING=1 to bypass uv and use the active venv's python3 directly (needed on s390x).
+# The serve configs replay trace files that are not in the repo. FETCH_BENCH_DATA=0
+# skips the fetch for a host that already has them mounted (the x86_64 benchmark
+# hosts do); anywhere else the fetch is what makes a serve config runnable at all,
+# so it is on by default. `eval` runs in the same shell as the benchmark below, so
+# the exported SPYRE_*_DATASET vars reach run_vllm_benchmarks.py.
+FETCH_BENCH_DATA ?= 1
+ifeq ($(strip $(FETCH_BENCH_DATA)),0)
+BENCH_DATA_CMD := true
+else
+BENCH_DATA_CMD := eval "$$(python3 .github/scripts/fetch_bench_datasets.py)"
+endif
+
+perf-tests: ## Run vLLM benchmark suite, writing JSON results under RESULTS_DIR. Filter with MODELS=<csv>, TPS=<csv of tensor-parallel sizes> and/or BENCH_TYPES=latency,throughput,serve. Set SKIP_UV_FOR_BENCHMARKING=1 to bypass uv and use the active venv's python3 directly (needed on s390x). Set FETCH_BENCH_DATA=0 to use pre-mounted traces instead of fetching them.
 	mkdir -p "$(RESULTS_DIR)"
 	$(AIU_SETUP_CMD); \
+	$(BENCH_DATA_CMD); \
 	$(BENCH_PY) .github/scripts/run_vllm_benchmarks.py \
 		--configs-dir vllm-benchmarks/benchmarks/spyre \
 		--results-dir "$(RESULTS_DIR)" \
