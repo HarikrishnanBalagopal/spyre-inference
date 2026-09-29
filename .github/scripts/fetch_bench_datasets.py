@@ -21,7 +21,7 @@ do, so the s390x and ppc64le perf lanes could not run a serve config at all.
 This fetches them from the artifact store into a cache dir instead, so any
 arch can run.
 
-Cache-first by design: a file whose SHA256 already matches DATASETS is left
+Cache-first by design: a file whose SHA256 already matches ARTIFACTS is left
 alone and never re-downloaded, so a warm host does no network I/O. Only a
 missing or corrupt file is fetched. The digests below are the integrity gate,
 so a truncated transfer or a silently-replaced artifact fails here rather than
@@ -44,10 +44,14 @@ Subcommands:
   verify            Check the cache and exit non-zero if anything is missing.
 
 Env:
-  SPYRE_BENCH_DATA_DIR   cache dir (default ~/.cache/spyre/vllm-bench-data). CI
-                         points this at the shared PVC the runners mount.
+  SPYRE_BENCH_DATA_DIR   cache dir (default ~/.cache/spyre/artifacts). CI points
+                         this at the shared PVC the runners mount.
   ARTIFACTORY_BASE_URL   artifact store base, e.g. https://<host>
-  ARTIFACTORY_BENCH_DATA_PATH  repo-relative prefix holding the .jsonl files
+  ARTIFACTORY_DATA_PATH  repo-relative ROOT that every artifact path below hangs
+                         off, e.g. <repo>/spyredata/components. Each ARTIFACTS
+                         entry adds its own path under this root, so a new
+                         dataset or artifact needs a table entry, not a new
+                         secret.
   ARTIFACTORY_TOKEN      bearer token (only needed when something must be fetched)
 """
 
@@ -60,24 +64,30 @@ from argparse import ArgumentParser
 from contextlib import contextmanager
 from pathlib import Path
 
-# The traces each serve config needs, keyed by the env var that names it.
-# `sha256` is the integrity gate; see the module docstring. Only the two
-# datasets the benchmark configs actually reference are listed: the store
-# holds further truncations that no config selects, and pulling those too
-# would cost every runner a multi-hundred-MB transfer for nothing. Add an
-# entry here when a config starts using one.
-DATASETS = {
+# Artifacts this repo pulls from the store, keyed by the env var that names the
+# local copy. `path` is relative to ARTIFACTORY_DATA_PATH and `sha256` is the
+# integrity gate; see the module docstring. Keeping the path per entry means a
+# new dataset or artifact anywhere under the root is a line here rather than
+# another secret.
+#
+# Only the two datasets the benchmark configs actually reference are listed: the
+# store holds further truncations that no config selects, and pulling those too
+# would cost every runner a multi-hundred-MB transfer for nothing. Add an entry
+# when a config starts using one.
+_TRACES = "spyre-inference/vllm-bench-data/converted_traces/2025.11.03_e2ee1b0_reordered"
+
+ARTIFACTS = {
     "SPYRE_AIOPS_DATASET": {
-        "filename": "aiops_results_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "path": f"{_TRACES}/aiops_results_2025.11.03_e2ee1b0_correct_order.jsonl",
         "sha256": "468cf059f2ec3b14108efc09baffabf5c5a440172a25660673d5a8fa029d0637",
     },
     "SPYRE_CICS_DATASET": {
-        "filename": "cics_results_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "path": f"{_TRACES}/cics_results_2025.11.03_e2ee1b0_correct_order.jsonl",
         "sha256": "e0efa895b4a22b601748c7dda9e8a2db146773fb8735fc45ee2920c042b40fb7",
     },
 }
 
-DEFAULT_CACHE_DIR = "~/.cache/spyre/vllm-bench-data"
+DEFAULT_CACHE_DIR = "~/.cache/spyre/artifacts"
 
 
 def cache_dir() -> Path:
@@ -133,20 +143,21 @@ def file_lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def download(filename: str, dest: Path, expected_sha: str) -> None:
-    """Fetch one trace into `dest`, verifying the digest before it is published.
+def download(rel_path: str, dest: Path, expected_sha: str) -> None:
+    """Fetch one artifact into `dest`, verifying the digest before it is published.
 
-    Downloads to a `.part` sibling and renames only after the digest matches, so
-    an interrupted run can never leave a short file that later looks cached.
+    `rel_path` is relative to ARTIFACTORY_DATA_PATH. Downloads to a `.part`
+    sibling and renames only after the digest matches, so an interrupted run can
+    never leave a short file that later looks cached.
     """
     base = _require("ARTIFACTORY_BASE_URL").rstrip("/")
-    prefix = _require("ARTIFACTORY_BENCH_DATA_PATH").strip("/")
+    root = _require("ARTIFACTORY_DATA_PATH").strip("/")
     token = _require("ARTIFACTORY_TOKEN")
-    url = f"{base}/artifactory/{prefix}/{filename}"
+    url = f"{base}/artifactory/{root}/{rel_path.lstrip('/')}"
 
     # PID-suffixed so two processes can never write the same temp file.
     partial = dest.with_suffix(f"{dest.suffix}.{os.getpid()}.part")
-    print(f"Fetching {filename} ...", file=sys.stderr)
+    print(f"Fetching {rel_path} ...", file=sys.stderr)
     subprocess.run(
         [
             "curl",
@@ -168,7 +179,7 @@ def download(filename: str, dest: Path, expected_sha: str) -> None:
     actual = sha256_of(partial)
     if actual != expected_sha:
         partial.unlink(missing_ok=True)
-        sys.exit(f"{filename}: sha256 {actual} does not match expected {expected_sha}")
+        sys.exit(f"{rel_path}: sha256 {actual} does not match expected {expected_sha}")
     partial.replace(dest)
 
 
@@ -182,15 +193,18 @@ def main() -> None:
         destination.mkdir(parents=True, exist_ok=True)
 
     missing = []
-    for var, spec in DATASETS.items():
-        path = destination / spec["filename"]
+    for var, spec in ARTIFACTS.items():
+        # Mirror the store's layout under the cache dir so two artifacts that
+        # share a basename cannot collide.
+        path = destination / spec["path"]
         # `env` only reports where the files belong, so it never hashes or fetches.
         if args.command != "env" and not is_cached(path, spec["sha256"]):
             if args.command == "fetch":
+                path.parent.mkdir(parents=True, exist_ok=True)
                 with file_lock(path):
                     # Another job may have finished the fetch while we waited.
                     if not is_cached(path, spec["sha256"]):
-                        download(spec["filename"], path, spec["sha256"])
+                        download(spec["path"], path, spec["sha256"])
             else:
                 missing.append(path)
         print(f"export {var}={path}")
