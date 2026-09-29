@@ -40,6 +40,10 @@ Eval the output to set the vars the configs reference:
 
 Subcommands:
   fetch (default)   Ensure each dataset is cached, print `export VAR=path`.
+                    An artifact it cannot get is a loud warning, not an error:
+                    most benchmark configs replay no trace and stay valid
+                    without one, and a config that does need one fails by name
+                    in run_vllm_benchmarks.py, which checks per config.
   env               Print `export VAR=path` only, fetching nothing.
   verify            Check the cache and exit non-zero if anything is missing.
 
@@ -117,11 +121,22 @@ def is_cached(path: Path, expected_sha: str) -> bool:
     return False
 
 
+class FetchUnavailable(Exception):
+    """A fetch cannot be attempted or did not succeed.
+
+    Raised rather than exiting so `fetch` can report the artifact it could not
+    get and still leave the run to decide. Only some benchmark configs replay a
+    trace: the rest must stay runnable on a host with no store access, e.g. a
+    fork pull request, where GitHub withholds every secret.
+    """
+
+
 def _require(var: str) -> str:
     value = os.environ.get(var)
     if not value:
-        sys.exit(
-            f"{var} is not set, and a dataset must be fetched. Set it or pre-populate the cache."
+        raise FetchUnavailable(
+            f"{var} is not set, so a missing artifact cannot be fetched. "
+            "Set it or pre-populate the cache."
         )
     return value
 
@@ -158,7 +173,7 @@ def download(rel_path: str, dest: Path, expected_sha: str) -> None:
     # PID-suffixed so two processes can never write the same temp file.
     partial = dest.with_suffix(f"{dest.suffix}.{os.getpid()}.part")
     print(f"Fetching {rel_path} ...", file=sys.stderr)
-    subprocess.run(
+    returncode = subprocess.run(
         [
             "curl",
             "-fSL",
@@ -173,13 +188,18 @@ def download(rel_path: str, dest: Path, expected_sha: str) -> None:
             str(partial),
             url,
         ],
-        check=True,
-    )
+        check=False,
+    ).returncode
+    if returncode != 0:
+        partial.unlink(missing_ok=True)
+        raise FetchUnavailable(f"{rel_path}: download failed (curl exit {returncode})")
 
     actual = sha256_of(partial)
     if actual != expected_sha:
         partial.unlink(missing_ok=True)
-        sys.exit(f"{rel_path}: sha256 {actual} does not match expected {expected_sha}")
+        raise FetchUnavailable(
+            f"{rel_path}: sha256 {actual} does not match expected {expected_sha}"
+        )
     partial.replace(dest)
 
 
@@ -193,6 +213,7 @@ def main() -> None:
         destination.mkdir(parents=True, exist_ok=True)
 
     missing = []
+    unavailable = []
     for var, spec in ARTIFACTS.items():
         # Mirror the store's layout under the cache dir so two artifacts that
         # share a basename cannot collide.
@@ -201,13 +222,38 @@ def main() -> None:
         if args.command != "env" and not is_cached(path, spec["sha256"]):
             if args.command == "fetch":
                 path.parent.mkdir(parents=True, exist_ok=True)
-                with file_lock(path):
-                    # Another job may have finished the fetch while we waited.
-                    if not is_cached(path, spec["sha256"]):
-                        download(spec["path"], path, spec["sha256"])
+                try:
+                    with file_lock(path):
+                        # Another job may have finished the fetch while we waited.
+                        if not is_cached(path, spec["sha256"]):
+                            download(spec["path"], path, spec["sha256"])
+                except FetchUnavailable as exc:
+                    unavailable.append((var, exc))
+                    # Export nothing for an artifact that is not there. A path
+                    # that does not exist would make the failure name the path
+                    # instead of the fetch that could not get it.
+                    continue
             else:
                 missing.append(path)
         print(f"export {var}={path}")
+
+    if unavailable:
+        # Loud, but NOT fatal. Most benchmark configs replay no trace and stay
+        # valid without these, so failing here would take down work that does
+        # not depend on them. A config that DOES need one still fails, by name,
+        # in run_vllm_benchmarks.py, which checks per config: that is what keeps
+        # a serve job from reporting success while measuring nothing.
+        banner = "=" * 72
+        print(banner, file=sys.stderr)
+        print("WARNING: could not fetch benchmark artifacts.", file=sys.stderr)
+        for var, exc in unavailable:
+            print(f"  {var}: {exc}", file=sys.stderr)
+        print(
+            "Configs that replay one of these traces will fail by name. Configs "
+            "that do not need a trace are unaffected and still run.",
+            file=sys.stderr,
+        )
+        print(banner, file=sys.stderr)
 
     if missing:
         for path in missing:
