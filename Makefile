@@ -408,11 +408,12 @@ BENCH_TYPES ?=
 # FETCH_BENCH_DATA=0 on a host that already has the traces mounted.
 #
 # The script writes `export SPYRE_*_DATASET=...` lines to stdout and its
-# diagnostics to stderr. Capture stdout to a file FIRST and source it only after
-# the script succeeded: eval'ing the output of a failed run would emit no exports,
-# and run_vllm_benchmarks.py would then fall back to its built-in /models/... paths
-# and print a second, misleading "not present on this host" error for what is
-# really one fetch failure.
+# diagnostics to stderr, so capture stdout to a file and source that rather than
+# eval'ing a pipeline, which would hide the exit status. An artifact the script
+# cannot fetch is a warning and not an error, so it still exits 0 and simply
+# exports nothing for that artifact; run_vllm_benchmarks.py then fails by name
+# for the configs that actually need it and runs the rest. The `&&` still matters
+# for the case the script really does fail, e.g. a corrupt cache under `verify`.
 FETCH_BENCH_DATA ?= 1
 ifeq ($(strip $(FETCH_BENCH_DATA)),0)
 BENCH_DATA_CMD := true
