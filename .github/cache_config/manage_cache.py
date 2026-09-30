@@ -20,12 +20,15 @@
 # limitations under the License.
 
 import argparse
+import hashlib
 import os
+import shutil
 import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
 
 import yaml
-from huggingface_hub import snapshot_download
-from huggingface_hub.utils import LocalEntryNotFoundError
 
 
 def main():
@@ -34,6 +37,11 @@ def main():
         "--public",
         action="store_true",
         help="Cache public_models",
+    )
+    parser.add_argument(
+        "--datasets",
+        action="store_true",
+        help="Cache artifactory_datasets",
     )
     args = parser.parse_args()
 
@@ -50,7 +58,9 @@ def main():
             print(f"❌ Error parsing {config_file}: {e}")
             sys.exit(1)
 
-    if args.public:
+    if args.datasets:
+        _run_artifactory_datasets(config, config_file)
+    elif args.public:
         _run_public(config, config_file)
     else:
         _run_gated(config, config_file)
@@ -68,6 +78,12 @@ def _run_public(config, config_file):
     if not models:
         print(f"⚠️ Warning: No public_models defined in {config_file}.")
         return
+
+    # Imported inside the function, and after the guards above, so `--datasets`
+    # runs without huggingface_hub installed and an empty config still exits 0.
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import LocalEntryNotFoundError
+
     print(f"📋 Found {len(models)} public model(s) to cache:", models)
     failed_models = []
     for entry in models:
@@ -113,6 +129,8 @@ def _run_gated(config, config_file):
     if not models:
         print(f"⚠️ Warning: No gated_models defined in {config_file}.")
         sys.exit(0)
+    from huggingface_hub import snapshot_download
+
     print(f"📋 Found {len(models)} model(s) to cache:", models)
     failed_models = []
     for entry in models:
@@ -135,6 +153,102 @@ def _run_gated(config, config_file):
         print(f"\n❌ Pipeline completed with errors. Failed models: {failed_models}")
         sys.exit(1)
     print("\n🎉 All models successfully processed and cached!")
+
+
+def _sha256_of(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _require_env(name):
+    value = os.getenv(name)
+    if not value:
+        print(f"❌ Error: {name} is not available or empty.")
+        sys.exit(1)
+    return value
+
+
+def _run_artifactory_datasets(config, config_file):
+    """Cache artifactory_datasets entries into the shared runner volume.
+
+    These files live in Artifactory, not on HuggingFace, so they need a token.
+    The benchmark job that reads them runs on pull_request from forks, where
+    GitHub withholds every secret, so it can only ever read the cache. This
+    dispatch is the writer.
+    """
+    spec = config.get("artifactory_datasets") or {}
+    files = spec.get("files", [])
+    if not files:
+        print(f"⚠️ Warning: No artifactory_datasets defined in {config_file}.")
+        return
+
+    dest_dir = os.getenv("SPYRE_BENCH_DATA_DIR")
+    if not dest_dir:
+        storage = os.getenv("STORAGE_1_DIR")
+        if not storage:
+            print("❌ Error: set SPYRE_BENCH_DATA_DIR or STORAGE_1_DIR.")
+            sys.exit(1)
+        dest_dir = os.path.join(storage, ".cache", "artifacts")
+
+    base_url = _require_env("ARTIFACTORY_BASE_URL").rstrip("/")
+    token = _require_env("ARTIFACTORY_TOKEN")
+    root = _require_env("ARTIFACTORY_DATA_PATH").strip("/")
+
+    subdir = spec.get("subdir", "").strip("/")
+    # Mirror the Artifactory layout under the cache root so the path a benchmark
+    # computes from the same subdir resolves without a second mapping.
+    target_dir = Path(dest_dir) / subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    force = os.getenv("FORCE_DOWNLOAD") == "true"
+
+    print(f"📋 Found {len(files)} dataset(s) to cache into {target_dir}")
+    failed = []
+    for entry in files:
+        name = entry["name"]
+        # str(): YAML reads an all-digit digest as an int, which would never
+        # equal the hexdigest and would re-download forever.
+        expected = str(entry["sha256"])
+        target = target_dir / name
+        print(f"\n🚀 Processing: {name}...")
+
+        if target.is_file() and not force:
+            actual = _sha256_of(target)
+            if actual == expected:
+                print(f"✅ {name}: already cached")
+                continue
+            print(f"♻️ {name}: sha256 {actual} != {expected}, re-downloading")
+
+        url = f"{base_url}/artifactory/{root}/{subdir}/{name}"
+        # A partial file under the real name would look like a valid cache entry
+        # to the benchmark, so download beside it and rename only after the
+        # digest matches. The pid keeps two concurrent writers off one temp file.
+        partial = target.with_name(f"{name}.{os.getpid()}.part")
+        try:
+            request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(request) as response, open(partial, "wb") as handle:
+                shutil.copyfileobj(response, handle)
+            actual = _sha256_of(partial)
+            if actual != expected:
+                partial.unlink(missing_ok=True)
+                raise ValueError(f"sha256 {actual}, expected {expected}")
+            os.replace(partial, target)
+            size_mb = target.stat().st_size / (1024 * 1024)
+            print(f"✅ {name}: downloaded and verified ({size_mb:.1f}MB)")
+        except (OSError, ValueError, urllib.error.URLError) as exc:
+            partial.unlink(missing_ok=True)
+            # Do not echo the exception for an HTTP error: the URL carries the
+            # internal host and some errors quote the request headers.
+            reason = exc.reason if isinstance(exc, urllib.error.HTTPError) else exc
+            print(f"❌ Failed to download {name}: {reason}")
+            failed.append(name)
+
+    if failed:
+        print(f"\n❌ Pipeline completed with errors. Failed datasets: {failed}")
+        sys.exit(1)
+    print("\n🎉 All datasets successfully processed and cached!")
 
 
 if __name__ == "__main__":

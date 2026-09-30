@@ -1,8 +1,12 @@
 
-# List of HF models to cache
+# Artifacts to pre-populate into the shared runner cache.
 #
 # gated_models: Cached via manual add_or_remove_artifacts_from_cache dispatch on main.
 # public_models: Auto-cached by test_each_commit.yaml.
+# artifactory_datasets: Cached via the same manual dispatch. These need an
+#   Artifactory credential, which GitHub withholds from pull_request runs on a
+#   fork, so they cannot be fetched by the job that consumes them. Populating
+#   them here instead keeps the benchmark read-only and credential-free.
 
 gated_models:
   - meta-llama/Meta-Llama-3-8B
@@ -56,3 +60,21 @@ public_models:
   - repo: google/gemma-4-26B-A4B-it
     revision: 4d7ae4984b7db7de8f8457170b3f1a419ee76d52
   - qwrt/Swedish0.1M
+
+# vLLM benchmark replay traces, fetched from Artifactory rather than HuggingFace.
+#
+# `base_url` and `root` come from the ARTIFACTORY_BASE_URL and
+# ARTIFACTORY_DATA_PATH secrets, so the internal host is not written down here.
+# Each entry is verified against its sha256 after download and skipped when a
+# correct copy is already cached, so a re-dispatch is cheap and idempotent.
+#
+# Only the traces that a benchmark config actually replays are listed. The
+# Artifactory prefix holds 13 files (474MB); these 2 are the ones referenced by
+# benchmarks/spyre/serve-tests.yaml, so the other 11 are deliberately not cached.
+artifactory_datasets:
+  subdir: spyre-inference/vllm-bench-data/converted_traces/2025.11.03_e2ee1b0_reordered
+  files:
+    - name: aiops_results_2025.11.03_e2ee1b0_correct_order.jsonl
+      sha256: 468cf059f2ec3b14108efc09baffabf5c5a440172a25660673d5a8fa029d0637
+    - name: cics_results_2025.11.03_e2ee1b0_correct_order.jsonl
+      sha256: e0efa895b4a22b601748c7dda9e8a2db146773fb8735fc45ee2920c042b40fb7
