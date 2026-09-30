@@ -155,6 +155,15 @@ def _run_gated(config, config_file):
     print("\n🎉 All models successfully processed and cached!")
 
 
+# urllib leaves `HTTPError.reason` empty on some Artifactory responses, so carry a
+# short hint per code. Text only, no URL or token.
+HTTP_HINTS = {
+    401: "Unauthorized: check ARTIFACTORY_TOKEN",
+    403: "Forbidden: token lacks read access to ARTIFACTORY_DATA_PATH",
+    404: "Not Found: check ARTIFACTORY_DATA_PATH and the subdir",
+}
+
+
 def _sha256_of(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -239,9 +248,14 @@ def _run_artifactory_datasets(config, config_file):
             print(f"✅ {name}: downloaded and verified ({size_mb:.1f}MB)")
         except (OSError, ValueError, urllib.error.URLError) as exc:
             partial.unlink(missing_ok=True)
-            # Do not echo the exception for an HTTP error: the URL carries the
-            # internal host and some errors quote the request headers.
-            reason = exc.reason if isinstance(exc, urllib.error.HTTPError) else exc
+            # Report the status code, not the exception: the URL carries the
+            # internal host and some errors quote the request headers. Artifactory
+            # answers an expired token with a 401 whose `reason` is empty, so the
+            # code is the only part that actually tells an operator what to fix.
+            if isinstance(exc, urllib.error.HTTPError):
+                reason = f"HTTP {exc.code} {exc.reason or HTTP_HINTS.get(exc.code, '')}".strip()
+            else:
+                reason = exc
             print(f"❌ Failed to download {name}: {reason}")
             failed.append(name)
 
