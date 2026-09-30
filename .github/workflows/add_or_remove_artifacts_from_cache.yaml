@@ -67,8 +67,10 @@ jobs:
 
       # Separate step so a missing ARTIFACTORY_* secret cannot mask a model
       # caching failure, and so the model cache still updates without it.
+      # !cancelled(): one failing gated model must not block the dataset cache,
+      # since a re-dispatch would hit the same model failure and never reach here.
       - name: Cache Artifactory datasets
-        if: ${{ inputs.include_datasets }}
+        if: ${{ !cancelled() && inputs.include_datasets }}
         working-directory: 'spyre-inference-repo'
         env:
           ARTIFACTORY_BASE_URL: ${{ secrets.ARTIFACTORY_BASE_URL }}

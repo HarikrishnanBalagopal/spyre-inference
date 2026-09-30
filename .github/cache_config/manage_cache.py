@@ -155,6 +155,9 @@ def _run_gated(config, config_file):
     print("\n🎉 All models successfully processed and cached!")
 
 
+# Per socket operation, so it bounds a stall rather than the whole transfer.
+DOWNLOAD_TIMEOUT_S = 120
+
 # urllib leaves `HTTPError.reason` empty on some Artifactory responses, so carry a
 # short hint per code. Text only, no URL or token.
 HTTP_HINTS = {
@@ -237,7 +240,13 @@ def _run_artifactory_datasets(config, config_file):
         partial = target.with_name(f"{name}.{os.getpid()}.part")
         try:
             request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-            with urllib.request.urlopen(request) as response, open(partial, "wb") as handle:
+            # timeout is per socket operation, not for the whole transfer, so a
+            # 474MB file is fine; without it a stalled connection would hang
+            # until the job timeout hours later.
+            with (
+                urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_S) as response,
+                open(partial, "wb") as handle,
+            ):
                 shutil.copyfileobj(response, handle)
             actual = _sha256_of(partial)
             if actual != expected:
@@ -248,14 +257,18 @@ def _run_artifactory_datasets(config, config_file):
             print(f"✅ {name}: downloaded and verified ({size_mb:.1f}MB)")
         except (OSError, ValueError, urllib.error.URLError) as exc:
             partial.unlink(missing_ok=True)
-            # Report the status code, not the exception: the URL carries the
-            # internal host and some errors quote the request headers. Artifactory
-            # answers an expired token with a 401 whose `reason` is empty, so the
-            # code is the only part that actually tells an operator what to fix.
+            # Never echo the exception text: the URL carries the internal host and
+            # a TLS or proxy error quotes it back ("hostname '<host>' doesn't
+            # match ..."). Report the HTTP code where there is one, since
+            # Artifactory answers a bad token with a 401 whose `reason` is empty,
+            # and otherwise just the exception type plus errno.
             if isinstance(exc, urllib.error.HTTPError):
                 reason = f"HTTP {exc.code} {exc.reason or HTTP_HINTS.get(exc.code, '')}".strip()
             else:
-                reason = exc
+                errno = getattr(exc, "errno", None) or getattr(
+                    getattr(exc, "reason", None), "errno", None
+                )
+                reason = type(exc).__name__ + (f" (errno {errno})" if errno else "")
             print(f"❌ Failed to download {name}: {reason}")
             failed.append(name)
 
