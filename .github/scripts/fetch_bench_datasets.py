@@ -43,9 +43,14 @@ Subcommands:
                     An artifact it cannot get is a loud warning, not an error:
                     most benchmark configs replay no trace and stay valid
                     without one, and a config that does need one fails by name
-                    in run_vllm_benchmarks.py, which checks per config.
+                    in run_vllm_benchmarks.py, which checks per config. Only
+                    artifacts that are actually present get exported.
   env               Print `export VAR=path` only, fetching nothing.
-  verify            Check the cache and exit non-zero if anything is missing.
+  verify            Check the cache and exit non-zero if anything is missing or
+                    corrupt, reporting which. Exports only the usable ones.
+
+A SPYRE_*_DATASET already set to an existing file is honoured as-is and neither
+re-fetched nor overridden, so a host with its own copy keeps using it.
 
 Env:
   SPYRE_BENCH_DATA_DIR   cache dir (default ~/.cache/spyre/artifacts). CI points
@@ -61,11 +66,12 @@ Env:
 
 import fcntl
 import hashlib
+import json
 import os
 import subprocess
 import sys
 from argparse import ArgumentParser
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 # Artifacts this repo pulls from the store, keyed by the env var that names the
@@ -107,18 +113,56 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def is_cached(path: Path, expected_sha: str) -> bool:
-    """True when `path` is present AND its digest matches, so a fetch can be skipped."""
+def _digest_note(path: Path) -> Path:
+    return path.with_suffix(f"{path.suffix}.sha256")
+
+
+def _remembered_digest(path: Path, stat: os.stat_result) -> str | None:
+    """The digest recorded for this exact (size, mtime_ns), or None.
+
+    A trace is hundreds of MB on a shared network volume, so re-reading it on
+    every warm run costs more than the fetch it is guarding. The note is only a
+    shortcut: any disagreement about size or mtime, or any unreadable note, falls
+    through to a real hash rather than trusting the record.
+    """
+    try:
+        note = json.loads(_digest_note(path).read_text())
+        if note["size"] == stat.st_size and note["mtime_ns"] == stat.st_mtime_ns:
+            return str(note["sha256"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return None
+
+
+def _remember_digest(path: Path, stat: os.stat_result, sha: str) -> None:
+    """Record `sha` for this (size, mtime_ns). Best effort: a read-only cache is fine."""
+    # The note is an optimisation, so losing it costs a re-hash and nothing else.
+    with suppress(OSError):
+        _digest_note(path).write_text(
+            json.dumps({"size": stat.st_size, "mtime_ns": stat.st_mtime_ns, "sha256": sha})
+        )
+
+
+def cache_state(path: Path, expected_sha: str) -> str:
+    """Classify the cached copy: "ok", "absent" or "corrupt".
+
+    Callers need the reason, not just a boolean: `fetch` re-downloads either way,
+    but `verify` has to say whether a file is missing or present-and-wrong.
+    """
     if not path.is_file():
-        return False
-    actual = sha256_of(path)
+        return "absent"
+    stat = path.stat()
+    actual = _remembered_digest(path, stat)
+    if actual is None:
+        actual = sha256_of(path)
+        _remember_digest(path, stat, actual)
     if actual == expected_sha:
-        return True
+        return "ok"
     print(
-        f"{path.name}: cached copy has sha256 {actual}, expected {expected_sha}; re-fetching",
+        f"{path.name}: cached copy has sha256 {actual}, expected {expected_sha}",
         file=sys.stderr,
     )
-    return False
+    return "corrupt"
 
 
 class FetchUnavailable(Exception):
@@ -147,6 +191,13 @@ def file_lock(path: Path):
 
     The lock file is a separate `.lock` sibling, never the dataset itself: locking
     the dataset would mean opening it for write and truncating a good cached copy.
+
+    The lock is an optimisation, not a correctness requirement. It is verified to
+    deduplicate concurrent fetches within one host; across pods the CI cache is an
+    NFS volume, where `flock` depends on the server lock manager and has not been
+    tested here. If it does not hold, two pods both download and both verify the
+    digest before an atomic rename, so the loser wastes bandwidth and the cache
+    still ends up correct. Nothing downstream reads a partial file.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -173,6 +224,8 @@ def download(rel_path: str, dest: Path, expected_sha: str) -> None:
     # PID-suffixed so two processes can never write the same temp file.
     partial = dest.with_suffix(f"{dest.suffix}.{os.getpid()}.part")
     print(f"Fetching {rel_path} ...", file=sys.stderr)
+    # The token goes in on stdin as a curl config file, never in argv: argv is
+    # world-readable through /proc/<pid>/cmdline on a shared runner.
     returncode = subprocess.run(
         [
             "curl",
@@ -182,12 +235,14 @@ def download(rel_path: str, dest: Path, expected_sha: str) -> None:
             "3",
             "--retry-delay",
             "5",
-            "-H",
-            f"Authorization: Bearer {token}",
             "-o",
             str(partial),
+            "-K",
+            "-",
             url,
         ],
+        input=f'header = "Authorization: Bearer {token}"\n',
+        text=True,
         check=False,
     ).returncode
     if returncode != 0:
@@ -209,32 +264,60 @@ def main() -> None:
     args = parser.parse_args()
 
     destination = cache_dir()
+    cache_dir_error = None
     if args.command == "fetch":
-        destination.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # An unusable cache root is reported per artifact below, like any
+            # other fetch failure, rather than killing a run whose configs may
+            # need no trace at all.
+            cache_dir_error = exc
 
     missing = []
+    corrupt = []
     unavailable = []
     for var, spec in ARTIFACTS.items():
+        # An operator who already has the trace somewhere else wins: honour a
+        # pre-set var when it points at a real file, rather than overriding it
+        # with a cache path and fetching a second copy.
+        preset = os.environ.get(var)
+        if preset and Path(preset).is_file():
+            print(f"export {var}={preset}")
+            continue
+
         # Mirror the store's layout under the cache dir so two artifacts that
         # share a basename cannot collide.
         path = destination / spec["path"]
         # `env` only reports where the files belong, so it never hashes or fetches.
-        if args.command != "env" and not is_cached(path, spec["sha256"]):
-            if args.command == "fetch":
+        if args.command == "env":
+            print(f"export {var}={path}")
+            continue
+
+        state = cache_state(path, spec["sha256"])
+        if state != "ok":
+            if args.command != "fetch":
+                (missing if state == "absent" else corrupt).append(path)
+                # Do not export a path `verify` just judged unusable.
+                continue
+            if cache_dir_error is not None:
+                unavailable.append((var, cache_dir_error))
+                continue
+            try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    with file_lock(path):
-                        # Another job may have finished the fetch while we waited.
-                        if not is_cached(path, spec["sha256"]):
-                            download(spec["path"], path, spec["sha256"])
-                except FetchUnavailable as exc:
-                    unavailable.append((var, exc))
-                    # Export nothing for an artifact that is not there. A path
-                    # that does not exist would make the failure name the path
-                    # instead of the fetch that could not get it.
-                    continue
-            else:
-                missing.append(path)
+                with file_lock(path):
+                    # Another job may have finished the fetch while we waited.
+                    if cache_state(path, spec["sha256"]) != "ok":
+                        download(spec["path"], path, spec["sha256"])
+            except (FetchUnavailable, OSError) as exc:
+                # OSError too, not just FetchUnavailable: a read-only or full
+                # cache dir, a lock file that cannot be created, or a failed
+                # rename must not take down the configs that need no trace.
+                unavailable.append((var, exc))
+                # Export nothing for an artifact that is not there. A path
+                # that does not exist would make the failure name the path
+                # instead of the fetch that could not get it.
+                continue
         print(f"export {var}={path}")
 
     if unavailable:
@@ -255,9 +338,11 @@ def main() -> None:
         )
         print(banner, file=sys.stderr)
 
-    if missing:
+    if missing or corrupt:
         for path in missing:
             print(f"missing from cache: {path}", file=sys.stderr)
+        for path in corrupt:
+            print(f"corrupt in cache (sha256 mismatch): {path}", file=sys.stderr)
         sys.exit(1)
 
 
