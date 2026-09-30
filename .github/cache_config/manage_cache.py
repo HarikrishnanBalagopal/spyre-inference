@@ -240,8 +240,8 @@ def _run_artifactory_datasets(config, config_file):
         partial = target.with_name(f"{name}.{os.getpid()}.part")
         try:
             request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-            # timeout is per socket operation, not for the whole transfer, so a
-            # 474MB file is fine; without it a stalled connection would hang
+            # Per socket operation, not for the whole transfer, so the 98MB
+            # largest file is fine; without it a stalled connection would hang
             # until the job timeout hours later.
             with (
                 urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_S) as response,
