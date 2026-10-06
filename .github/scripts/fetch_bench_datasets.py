@@ -80,10 +80,16 @@ from pathlib import Path
 # new dataset or artifact anywhere under the root is a line here rather than
 # another secret.
 #
-# Only the two datasets the benchmark configs actually reference are listed: the
-# store holds further truncations that no config selects, and pulling those too
-# would cost every runner a multi-hundred-MB transfer for nothing. Add an entry
-# when a config starts using one.
+# All thirteen files in the trace prefix are listed, not only the two that a
+# benchmark config selects today (aiops and cics). A fork PR gets no secrets and
+# so cannot fetch a missing artifact for itself, which would make every new
+# trace-replaying config wait on a config change PLUS a cache dispatch. Mirroring
+# the whole prefix costs one transfer on a shared volume and removes that wait.
+# The digests match .github/cache_config/hf_models_and_datasets.yaml, which the
+# writer dispatch uses to populate that cache; keep the two in step.
+#
+# A consumer that needs only a subset (a Jenkins node with its own local cache and
+# credentials of its own, say) can fetch per artifact rather than the whole table.
 _TRACES = "spyre-inference/vllm-bench-data/converted_traces/2025.11.03_e2ee1b0_reordered"
 
 ARTIFACTS = {
@@ -91,9 +97,53 @@ ARTIFACTS = {
         "path": f"{_TRACES}/aiops_results_2025.11.03_e2ee1b0_correct_order.jsonl",
         "sha256": "468cf059f2ec3b14108efc09baffabf5c5a440172a25660673d5a8fa029d0637",
     },
+    "SPYRE_ALL_SEQUENCES_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "sha256": "6df5d4de50a28b6ed7ad1d0b8794417899d18548627529a526bef93967906e3c",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_16K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_16k.jsonl",
+        "sha256": "03b9e0d4b4432e0094f84b98fa89e6bfb2b402d35fef84421558d77ea36f5197",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_1K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_1k.jsonl",
+        "sha256": "6ad8b08d2a600a24993a9570100e14e8d40ffe1308802ee12698f0d7b37c0b90",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_2K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_2k.jsonl",
+        "sha256": "9b28b894978bd940ba860187d932de86de382534f04e1b284b61af5877418adb",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_32K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_32k.jsonl",
+        "sha256": "a9d6a8a6cf849a60b56dbc8bd1b1eb9b95babb6a2d6a7747878e167869637b5d",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_4K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_4k.jsonl",
+        "sha256": "8d76a859a67677a091290dad395d03acf88719688128530d7a943c4f23b1acff",
+    },
+    "SPYRE_ALL_SEQUENCES_TRUNCATED_8K_DATASET": {
+        "path": f"{_TRACES}/all_sequences_2025.11.03_e2ee1b0_correct_order_truncated_8k.jsonl",
+        "sha256": "bd6579a7dbce7c80c3908e3150455eb13af940ee900c354539e7f6491512fce7",
+    },
     "SPYRE_CICS_DATASET": {
         "path": f"{_TRACES}/cics_results_2025.11.03_e2ee1b0_correct_order.jsonl",
         "sha256": "e0efa895b4a22b601748c7dda9e8a2db146773fb8735fc45ee2920c042b40fb7",
+    },
+    "SPYRE_DB2_DATASET": {
+        "path": f"{_TRACES}/db2_results_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "sha256": "b219891bee31b62d82f83ddc4b478bf75ac9039762b22b1afac5fc437cb2bac1",
+    },
+    "SPYRE_DB2_TRUNCATED_32K_DATASET": {
+        "path": f"{_TRACES}/db2_results_2025.11.03_e2ee1b0_correct_order_truncated_32k.jsonl",
+        "sha256": "9c0584930498e268b0af52adfc411c71d34a9065c16742381281ef578d911283",
+    },
+    "SPYRE_IMS_DATASET": {
+        "path": f"{_TRACES}/ims_results_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "sha256": "49a284e3f10027bb430f168a4fba7310d7dcb3147565ffed1bb87d1fc6fe9c18",
+    },
+    "SPYRE_TLS_DATASET": {
+        "path": f"{_TRACES}/tls_results_2025.11.03_e2ee1b0_correct_order.jsonl",
+        "sha256": "9b1cc4d35e3626d1a6bbe0f998caa039b70d694241f25835a2083e1854e14028",
     },
 }
 
