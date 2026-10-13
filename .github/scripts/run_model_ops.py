@@ -86,12 +86,20 @@ def merge_reports(parts: list[Path], out: Path) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config-dir", default="tests/model_ops",
-                    help="directory of model-ops configs (default: tests/model_ops)")
-    ap.add_argument("--config", action="append", default=[],
-                    help="run only this config (repeatable); default is every *.yaml/*.yml in --config-dir")
-    ap.add_argument("--junit-xml", type=Path, default=None,
-                    help="write a combined JUnit report here")
+    ap.add_argument(
+        "--config-dir",
+        default="tests/model_ops",
+        help="directory of model-ops configs (default: tests/model_ops)",
+    )
+    ap.add_argument(
+        "--config",
+        action="append",
+        default=[],
+        help="run only this config (repeatable); default is every *.yaml/*.yml in --config-dir",
+    )
+    ap.add_argument(
+        "--junit-xml", type=Path, default=None, help="write a combined JUnit report here"
+    )
     args, pytest_args = ap.parse_known_args()
 
     config_dir = Path(args.config_dir)
@@ -133,8 +141,13 @@ def main() -> int:
                 ),
             }
             cmd = [
-                sys.executable, "-m", "pytest", str(tests_dir / "models" / SENTINEL.split("/")[-1]),
-                "-v", f"--junit-xml={part}", *pytest_args,
+                sys.executable,
+                "-m",
+                "pytest",
+                str(tests_dir / "models" / SENTINEL.split("/")[-1]),
+                "-v",
+                f"--junit-xml={part}",
+                *pytest_args,
             ]
             print(f"\n=== {config.name} ===", flush=True)
             # cwd=tests_dir so the runner resolves its conftest and helper imports.
