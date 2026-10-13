@@ -124,6 +124,10 @@ def main() -> int:
                 # How the OOT framework receives its config; the whole point of
                 # running an out-of-tree config through an in-image runner.
                 "PYTORCH_TEST_CONFIG": str(config.resolve()),
+                # A config may reference the runner tree as ${TORCH_DEVICE_ROOT}
+                # in its files[].path, so export it even when it was discovered
+                # rather than passed in.
+                "TORCH_DEVICE_ROOT": str(source),
                 "PYTHONPATH": os.pathsep.join(
                     p for p in (str(tests_dir), os.environ.get("PYTHONPATH", "")) if p
                 ),
