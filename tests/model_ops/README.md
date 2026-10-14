@@ -18,7 +18,7 @@ Driver: `utils/model_ops/models/gemma4-26b-a4b/run_spyre_inference.py` in hf-ada
 [hf-adapters#651](https://github.com/torch-spyre/hf-adapters/pull/651) (generated from its head commit
 `f977452`).
 
-- Image: `icr.io/ai_sw_accel/2.0/prod/spyre-inference:ci-cd-tech-preview-v3`, vLLM 0.28.0, one Spyre
+- Image: the `spyre-inference` Tech Preview v3 CI/CD build, vLLM 0.28.0, one Spyre
   card, tensor parallel size 1, float16, default compilation (`STOCK_TORCH_COMPILE`).
 - Engine settings: `max_model_len=3072`, `max_num_seqs=8`; one request, prompt
   `Say hello in one word.`, 8 new tokens (the parameter header at the top of the file records batch 1,
