@@ -100,6 +100,11 @@ def main() -> int:
     ap.add_argument(
         "--junit-xml", type=Path, default=None, help="write a combined JUnit report here"
     )
+    ap.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="exit 0 when --config-dir holds no configs, instead of failing",
+    )
     args, pytest_args = ap.parse_known_args()
 
     config_dir = Path(args.config_dir)
@@ -114,9 +119,12 @@ def main() -> int:
         )
 
     if not configs:
-        # Nothing to run is not a failure: the configs land in their own change.
-        print(f"run_model_ops: no configs in {config_dir}, nothing to run")
-        return 0
+        # A suite that declares itself and then runs nothing reports PASS while testing
+        # nothing, so an empty config dir is an error unless the caller opts in.
+        if args.allow_empty:
+            print(f"run_model_ops: no configs in {config_dir}, nothing to run (--allow-empty)")
+            return 0
+        fail(f"no configs in {config_dir}. Pass --allow-empty if running nothing is intended.")
 
     source = torch_spyre_source()
     tests_dir = source / "tests"
