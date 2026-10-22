@@ -235,6 +235,9 @@ runs:
     # Marker expression and coverage wiring both live in the Makefile test_target; COVERAGE=1 drops .coverage.* data files for the fan-in.
     # Bounded so a wedged card acquisition (a blocking open() on a contended /dev/vfio device) cannot hang the job silently -- failing here keeps the step's log and lets the post steps publish JUnit.
     # Composite action steps don't support the `timeout-minutes` step key, so the same bound is enforced with the shell `timeout` command instead.
+    # `timeout` must wrap the WHOLE pipeline, not just make: vLLM's EngineCore/Worker double-fork out of
+    # make's process group and inherit fd 1/2, so bounding make alone leaves them holding the `tee` pipe
+    # open and the step blocks on tee forever (runs 39710907310/39725279398 hit the 720min job cap).
     - name: Run tests
       shell: bash
       env:
@@ -259,10 +262,10 @@ runs:
         # (which only reads pod stdout via /var/log/containers) captures it; a plain run:
         # step's output is intercepted by the runner agent and never reaches pod stdout.
         # pipefail preserves test failures; without writable PID 1 stdout, use ordinary step output.
-        set -o pipefail
         if [[ -w /proc/1/fd/1 ]]; then
           timeout --signal=TERM --kill-after=1m 90m \
-            make ${{ inputs.test_target }} COVERAGE=1 JUNIT_XML=junit-${{ inputs.test_target }}.xml 2>&1 | tee /proc/1/fd/1
+            bash -c 'set -o pipefail; make "$@" 2>&1 | tee /proc/1/fd/1' _ \
+            ${{ inputs.test_target }} COVERAGE=1 JUNIT_XML=junit-${{ inputs.test_target }}.xml
         else
           timeout --signal=TERM --kill-after=1m 90m \
             make ${{ inputs.test_target }} COVERAGE=1 JUNIT_XML=junit-${{ inputs.test_target }}.xml
